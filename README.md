@@ -96,7 +96,3 @@ To reset the demo data, stop the server and remove the local database file. Star
 7. **Student response:** The student accepts or rejects the offer. An accepted offer marks the student as placed.
 8. **Coordinator oversight:** The placement coordinator reviews placement statistics and application history.
 
-
-## Notes
-
-This is a local educational project. The demo accounts and default configuration are for demonstration only. Before using the application outside a local classroom demo, configure a secure `JWT_SECRET` and deploy it over HTTPS.

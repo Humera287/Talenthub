@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TalentHub – Campus Placement</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --ink:#1b2333; --muted:#667085; --brand:#1f4eb4; --ok:#177245; --bad:#b42318; --line:#e3e8f0; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--brand); color:#fff; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:20px; margin:0; }
+  main { max-width:980px; margin:20px auto; padding:0 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  h2 { margin:0 0 10px; font-size:18px; } h3 { margin:12px 0 6px; font-size:15px; }
+  input, select, button { font:inherit; padding:8px 10px; border-radius:7px; border:1px solid #c9d1de; }
+  input, select { width:100%; margin:4px 0 10px; }
+  button { background:var(--brand); color:#fff; border:none; cursor:pointer; margin:2px 4px 2px 0; }
+  button.ghost { background:#fff; color:var(--brand); border:1px solid var(--brand); }
+  button.danger { background:var(--bad); }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:99px; font-size:12px; background:#e8eefc; color:var(--brand); }
+  .tag.ok { background:#e3f6ec; color:var(--ok); } .tag.bad { background:#fde8e6; color:var(--bad); }
+  .muted { color:var(--muted); font-size:13px; }
+  #toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#1b2333; color:#fff; padding:10px 16px; border-radius:8px; display:none; max-width:90%; z-index:9; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .stat { background:#f0f4ff; border-radius:8px; padding:10px; } .stat b { font-size:22px; display:block; }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<header><h1>🎓 TalentHub</h1><div id="who"></div></header>
+<main id="view"></main>
+<div id="toast"></div>
+
+<script>
+// ---------- helpers ----------
+const $ = (s) => document.querySelector(s);
+const view = $('#view');
+let token = sessionStorage.getItem('th_token');
+let role = sessionStorage.getItem('th_role');
+
+// Every value from the server is escaped before it is put into the page (prevents XSS).
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const tagClass = (s) => (s === 'ACCEPTED' || s === 'OFFERED' ? 'ok' : s === 'REJECTED' ? 'bad' : '');
+const fmt = (d) => new Date(d).toLocaleString();
+
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast.h); toast.h = setTimeout(() => (t.style.display = 'none'), 3500);
+}
+
+async function api(method, url, body) {
+  const r = await fetch('/api' + url, {
+    method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401 && token) { logout(); throw new Error('Session expired, please log in again'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.details?.reason ? `${data.error}: ${data.details.reason}` : data.error || 'Request failed');
+  return data;
+}
+const act = async (fn, okMsg) => { try { await fn(); if (okMsg) toast(okMsg); render(); } catch (e) { toast(e.message); } };
+const val = (id) => document.getElementById(id).value;
+
+async function downloadLetter(appId) {
+  try {
+    const r = await fetch(`/api/applications/${appId}/offer-letter`, { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error('Could not download the letter');
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a'); a.href = url; a.download = 'offer-letter.pdf'; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { toast(e.message); }
+}
+
+function logout() { sessionStorage.clear(); token = role = null; render(); }
+
+// ---------- login / register ----------
+function renderLogin() {
+  $('#who').innerHTML = '';
+  view.innerHTML = `
+  <div class="row">
+    <div class="card"><h2>Log in</h2>
+      <label>Email</label><input id="le" type="email" autocomplete="username">
+      <label>Password</label><input id="lp" type="password" autocomplete="current-password">
+      <button id="loginBtn">Log in</button>
+      <p class="muted">Demo logins: rahul@student.edu / Student@123, hr@abc.com / Company@123, coordinator@talenthub.edu / Coord@123</p>
+    </div>
+    <div class="card"><h2>New student? Register</h2>
+      <div class="row">
+        <div><label>USN</label><input id="ru"></div><div><label>Full name</label><input id="rn"></div>
+        <div><label>Email</label><input id="re" type="email"></div><div><label>Password (8+ chars)</label><input id="rp" type="password"></div>
+        <div><label>Branch</label><select id="rb"><option>CSE</option><option>ISE</option><option>ECE</option><option>EEE</option><option>ME</option></select></div>
+        <div><label>CGPA</label><input id="rc" type="number" step="0.01" min="0" max="10"></div>
+        <div><label>Active backlogs</label><input id="ra" type="number" min="0" value="0"></div>
+        <div><label>Cleared backlogs</label><input id="rcl" type="number" min="0" value="0"></div>
+      </div>
+      <label><input id="rcon" type="checkbox" style="width:auto"> I consent to my placement data being processed</label><br><br>
+      <button id="regBtn">Register</button>
+    </div>
+  </div>`;
+  $('#loginBtn').onclick = () => act(async () => {
+    const r = await api('POST', '/auth/login', { email: val('le'), password: val('lp') });
+    token = r.token; role = r.role; sessionStorage.setItem('th_token', token); sessionStorage.setItem('th_role', role);
+  });
+  $('#regBtn').onclick = () => act(async () => {
+    await api('POST', '/auth/register', {
+      usn: val('ru'), full_name: val('rn'), email: val('re'), password: val('rp'), branch: val('rb'),
+      cgpa: val('rc'), active_backlogs: val('ra'), cleared_backlogs: val('rcl'), consent: $('#rcon').checked,
+    });
+  }, 'Registered! You can log in now.');
+}
+
+// ---------- student ----------
+async function renderStudent() {
+  const [me, jobs, apps] = await Promise.all([api('GET', '/me'), api('GET', '/jobs'), api('GET', '/applications/mine')]);
+  $('#who').innerHTML = `${esc(me.full_name)} (${esc(me.usn)}) <button class="ghost" id="out">Log out</button>`;
+  view.innerHTML = `
+  <div class="card"><h2>My profile</h2>
+    <p>Branch <b>${esc(me.branch)}</b> · CGPA <b>${esc(me.cgpa)}</b> · Active backlogs <b>${esc(me.active_backlogs)}</b> ·
+    ${me.has_accepted_offer ? '<span class="tag ok">Placed</span>' : '<span class="tag">Not placed yet</span>'}</p>
+    <p class="muted">Academic details are maintained by the placement coordinator.</p>
+    <button class="danger" id="erase">Erase my personal data</button></div>
+  <div class="card"><h2>Open jobs</h2><div class="scroll"><table>
+    <tr><th>Company</th><th>Role</th><th>Rules</th><th>Eligibility</th><th></th></tr>
+    ${jobs.map((j) => `<tr><td>${esc(j.company_name)}<br><span class="muted">${esc(j.season)}</span></td><td>${esc(j.role)}</td>
+      <td class="muted">Min CGPA ${esc(j.min_cgpa)}<br>Max backlogs ${esc(j.max_backlogs)}<br>Branches: ${j.allowed_branches.length ? esc(j.allowed_branches.join(', ')) : 'All'}</td>
+      <td>${j.eligibility.eligible ? '<span class="tag ok">Eligible</span>' : `<span class="tag bad">Not eligible</span><br><span class="muted">${esc(j.eligibility.reason)}</span>`}</td>
+      <td>${j.alreadyApplied ? '<span class="tag">Applied</span>' : `<button data-apply="${j.job_id}">Apply</button>`}</td></tr>`).join('')}
+  </table></div></div>
+  <div class="card"><h2>My applications</h2>
+    ${apps.length ? apps.map((a) => `<div style="border-top:1px solid var(--line);padding:8px 0">
+      <b>${esc(a.company_name)} – ${esc(a.role)}</b> <span class="tag ${tagClass(a.status)}">${esc(a.status)}</span>
+      <div class="muted">Applied ${fmt(a.applied_at)}</div>
+      ${a.interviews.map((i) => `<div class="muted">Round ${i.round_number}: ${fmt(i.scheduled_at)} @ ${esc(i.venue)} ${i.passed === null ? '' : i.passed ? '✅ passed' : '❌ not passed'}</div>`).join('')}
+      ${a.offer ? `<div>Offer: <b>${esc(a.offer.package_lpa)} LPA</b> <button class="ghost" data-letter="${a.application_id}">Download letter</button></div>` : ''}
+      ${a.status === 'OFFERED' ? `<button data-accept="${a.application_id}">Accept offer</button><button class="danger" data-decline="${a.application_id}">Decline</button>` : ''}
+    </div>`).join('') : '<p class="muted">No applications yet.</p>'}
+  </div>`;
+  $('#out').onclick = logout;
+  $('#erase').onclick = () => { if (confirm('This anonymises your record permanently. Continue?')) act(async () => { await api('DELETE', '/auth/me'); logout(); }); };
+  document.querySelectorAll('[data-apply]').forEach((b) => (b.onclick = () => act(() => api('POST', '/applications', { jobId: +b.dataset.apply }), 'Application submitted')));
+  document.querySelectorAll('[data-accept]').forEach((b) => (b.onclick = () => act(() => api('POST', `/applications/${b.dataset.accept}/accept`), 'Offer accepted 🎉')));
+  document.querySelectorAll('[data-decline]').forEach((b) => (b.onclick = () => act(() => api('POST', `/applications/${b.dataset.decline}/decline`), 'Offer declined')));
+  document.querySelectorAll('[data-letter]').forEach((b) => (b.onclick = () => downloadLetter(b.dataset.letter)));
+}
+
+// ---------- company ----------
+async function renderCompany() {
+  const jobs = await api('GET', '/company/jobs');
+  const lists = await Promise.all(jobs.map((j) => api('GET', `/company/jobs/${j.job_id}/applications`)));
+  $('#who').innerHTML = `Company <button class="ghost" id="out">Log out</button>`;
+  view.innerHTML = `
+  <div class="card"><h2>Post a job</h2><div class="row">
+    <div><label>Role</label><input id="jr"></div><div><label>Season</label><input id="js" value="2026-27"></div>
+    <div><label>Min CGPA</label><input id="jc" type="number" step="0.01" value="7.0"></div>
+    <div><label>Max active backlogs</label><input id="jb" type="number" min="0" value="0"></div>
+    <div><label>Drive date</label><input id="jd" type="date"></div>
+    <div><label>Branches (leave empty = all)</label><select id="jbr" multiple size="5"><option>CSE</option><option>ISE</option><option>ECE</option><option>EEE</option><option>ME</option></select></div>
+  </div><button id="postJob">Post job</button></div>
+  ${jobs.map((j, idx) => `<div class="card"><h2>${esc(j.role)} <span class="muted">(${esc(j.season)}) ${j.is_open ? '' : '· closed'}</span></h2>
+    <p class="muted">Min CGPA ${esc(j.min_cgpa)} · Max backlogs ${esc(j.max_backlogs)} · Branches: ${j.allowed_branches.length ? esc(j.allowed_branches.join(', ')) : 'All'}
+    ${j.is_open ? `<button class="ghost" data-close="${j.job_id}">Close job</button>` : ''}</p>
+    <div class="scroll"><table><tr><th>Student</th><th>Academics</th><th>Status</th><th>Actions</th></tr>
+    ${lists[idx].map((a) => `<tr><td>${esc(a.full_name)}<br><span class="muted">${esc(a.usn)}</span></td>
+      <td>${esc(a.branch)} · CGPA ${esc(a.cgpa)} · ${esc(a.active_backlogs)} backlogs</td>
+      <td><span class="tag ${tagClass(a.status)}">${esc(a.status)}</span>
+        ${a.interviews.map((i) => `<div class="muted">R${i.round_number}: ${fmt(i.scheduled_at)} @ ${esc(i.venue)} ${i.passed === null ? '' : i.passed ? '✅' : '❌'}
+          ${i.passed === null ? `<button class="ghost" data-pass="${i.slot_id}">Pass</button><button class="ghost" data-fail="${i.slot_id}">Fail</button>` : ''}</div>`).join('')}
+        ${a.offer ? `<div class="muted">Offer ${esc(a.offer.package_lpa)} LPA</div>` : ''}</td>
+      <td>
+        ${a.status === 'APPLIED' ? `<button data-short="${a.application_id}">Shortlist</button>` : ''}
+        ${['SHORTLISTED', 'INTERVIEW_SCHEDULED'].includes(a.status) ? `<button class="ghost" data-sched="${a.application_id}" data-next="${a.interviews.length + 1}">Schedule round</button>` : ''}
+        ${a.status === 'INTERVIEW_SCHEDULED' ? `<button data-offer="${a.application_id}">Issue offer</button>` : ''}
+        ${['APPLIED', 'SHORTLISTED', 'INTERVIEW_SCHEDULED'].includes(a.status) ? `<button class="danger" data-rej="${a.application_id}">Reject</button>` : ''}
+        ${a.offer ? `<button class="ghost" data-letter="${a.application_id}">Letter</button>` : ''}
+      </td></tr>`).join('') || '<tr><td colspan="4" class="muted">No applications yet.</td></tr>'}
+    </table></div></div>`).join('')}`;
+  $('#out').onclick = logout;
+  $('#postJob').onclick = () => act(() => api('POST', '/company/jobs', {
+    role: val('jr'), season: val('js'), min_cgpa: val('jc'), max_backlogs: val('jb'), drive_date: val('jd') || null,
+    branches: [...$('#jbr').selectedOptions].map((o) => o.value),
+  }), 'Job posted');
+  const on = (sel, fn) => document.querySelectorAll(sel).forEach((b) => (b.onclick = () => fn(b)));
+  on('[data-close]', (b) => act(() => api('POST', `/company/jobs/${b.dataset.close}/close`), 'Job closed'));
+  on('[data-short]', (b) => act(() => api('POST', `/company/applications/${b.dataset.short}/shortlist`), 'Shortlisted'));
+  on('[data-rej]', (b) => act(() => api('POST', `/company/applications/${b.dataset.rej}/reject`), 'Rejected'));
+  on('[data-pass]', (b) => act(() => api('POST', `/company/interviews/${b.dataset.pass}/result`, { passed: true }), 'Recorded: passed'));
+  on('[data-fail]', (b) => act(() => api('POST', `/company/interviews/${b.dataset.fail}/result`, { passed: false }), 'Recorded: not passed'));
+  on('[data-letter]', (b) => downloadLetter(b.dataset.letter));
+  on('[data-sched]', (b) => {
+    const when = prompt('Interview date & time (e.g. 2026-11-20T10:00):'); if (!when) return;
+    const venue = prompt('Venue:'); if (!venue) return;
+    act(() => api('POST', `/company/applications/${b.dataset.sched}/interviews`, { round_number: +b.dataset.next, scheduled_at: when, venue }), 'Interview scheduled');
+  });
+  on('[data-offer]', (b) => {
+    const pkg = prompt('Package in LPA (e.g. 10.5):'); if (!pkg) return;
+    act(() => api('POST', `/company/applications/${b.dataset.offer}/offer`, { package_lpa: pkg }), 'Offer issued');
+  });
+}
+
+// ---------- coordinator ----------
+async function renderCoordinator() {
+  const [stats, students, audit] = await Promise.all([api('GET', '/coordinator/stats'), api('GET', '/students'), api('GET', '/coordinator/audit')]);
+  $('#who').innerHTML = `Coordinator <button class="ghost" id="out">Log out</button>`;
+  view.innerHTML = `
+  <div class="card"><h2>Placement statistics</h2><div class="stats">
+    <div class="stat"><b>${stats.totalStudents}</b>Students</div>
+    <div class="stat"><b>${stats.placedStudents}</b>Placed</div>
+    <div class="stat"><b>${stats.placementPercentage}%</b>Placement rate</div>
+    ${Object.entries(stats.applicationsByStatus).map(([k, v]) => `<div class="stat"><b>${v}</b>${esc(k)}</div>`).join('')}
+  </div>
+  <h3>Offers by company</h3>
+  ${stats.offersByCompany.length ? `<table><tr><th>Company</th><th>Offers</th><th>Accepted</th></tr>${stats.offersByCompany.map((o) => `<tr><td>${esc(o.company)}</td><td>${o.offers_made}</td><td>${o.accepted || 0}</td></tr>`).join('')}</table>` : '<p class="muted">No offers yet.</p>'}</div>
+  <div class="card"><h2>Add a company</h2><div class="row">
+    <div><label>Company name</label><input id="cn"></div><div><label>Rep email</label><input id="ce" type="email"></div>
+    <div><label>Rep password (8+)</label><input id="cp" type="password"></div></div><button id="addCo">Create company</button></div>
+  <div class="card"><h2>Students</h2><div class="scroll"><table>
+    <tr><th>USN / Name</th><th>Branch</th><th>CGPA</th><th>Active</th><th>Cleared</th><th>Placed</th><th></th></tr>
+    ${students.map((s) => `<tr><td>${esc(s.usn)}<br><span class="muted">${esc(s.full_name)}</span></td>
+      <td>${esc(s.branch)}</td><td><input style="width:75px" id="cg${s.student_id}" type="number" step="0.01" value="${esc(s.cgpa)}"></td>
+      <td><input style="width:65px" id="ab${s.student_id}" type="number" min="0" value="${esc(s.active_backlogs)}"></td>
+      <td><input style="width:65px" id="cb${s.student_id}" type="number" min="0" value="${esc(s.cleared_backlogs)}"></td>
+      <td>${s.has_accepted_offer ? '✅' : '—'}</td><td><button class="ghost" data-save="${s.student_id}">Save</button></td></tr>`).join('')}
+  </table></div></div>
+  <div class="card"><h2>Audit trail (latest status changes)</h2><div class="scroll"><table>
+    <tr><th>When</th><th>Application</th><th>Change</th><th>By</th></tr>
+    ${audit.map((h) => `<tr><td>${fmt(h.changed_at)}</td><td>#${h.application_id}</td><td>${esc(h.from_status || '—')} → ${esc(h.to_status)}</td><td>${esc(h.changed_by_email)}</td></tr>`).join('')}
+  </table></div></div>`;
+  $('#out').onclick = logout;
+  $('#addCo').onclick = () => act(() => api('POST', '/coordinator/companies', { name: val('cn'), rep_email: val('ce'), rep_password: val('cp') }), 'Company created');
+  document.querySelectorAll('[data-save]').forEach((b) => (b.onclick = () => {
+    const id = b.dataset.save;
+    act(() => api('PUT', `/students/${id}`, { cgpa: val('cg' + id), active_backlogs: val('ab' + id), cleared_backlogs: val('cb' + id) }), 'Student updated');
+  }));
+}
+
+async function render() {
+  try {
+    if (!token) return renderLogin();
+    if (role === 'STUDENT') return await renderStudent();
+    if (role === 'COMPANY') return await renderCompany();
+    if (role === 'COORDINATOR') return await renderCoordinator();
+    logout();
+  } catch (e) { toast(e.message); }
+}
+render();
+</script>
+</body>
+</html>
